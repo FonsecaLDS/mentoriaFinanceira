@@ -12,6 +12,12 @@ test("home page loads without horizontal overflow on a narrow viewport", async (
       name: "Um espaço claro para cuidar das suas finanças.",
     }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Começar a organizar" }),
+  ).toHaveAttribute("href", "/register");
+  await expect(
+    page.getByRole("link", { name: "Já tenho uma conta" }),
+  ).toHaveAttribute("href", "/login");
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth),
   ).toBeLessThanOrEqual(320);

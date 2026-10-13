@@ -7,7 +7,8 @@ const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 
 export const metadata: Metadata = {
   title: "Mentoria Financeira",
-  description: "Base técnica do SaaS de gestão financeira.",
+  description:
+    "Organize suas contas, acompanhe gastos e cartões e planeje suas metas com a Mentoria Financeira.",
 };
 
 export default function RootLayout({

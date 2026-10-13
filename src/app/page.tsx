@@ -13,21 +13,58 @@ export default function Home() {
           </div>
           <div className="max-w-2xl">
             <p className="mb-3 text-sm font-semibold tracking-[0.14em] text-[var(--text-secondary)] uppercase">
-              Fundação técnica
+              Mais clareza para suas escolhas
             </p>
             <h1 className="text-3xl font-bold tracking-tight text-[var(--text-primary)] sm:text-5xl">
               Um espaço claro para cuidar das suas finanças.
             </h1>
             <p className="mt-5 max-w-xl text-base leading-7 text-[var(--text-secondary)] sm:text-lg">
-              Aplicação web responsiva preparada para evoluir com segurança,
-              acessibilidade e integração Supabase.
+              Organize suas contas, acompanhe os gastos e planeje seus próximos
+              passos. Tenha uma visão do seu mês e saiba quanto pode reservar
+              para o que importa.
             </p>
-            <Button asChild className="mt-8">
-              <Link href="/login">
-                Explorar a base{" "}
-                <ArrowRight aria-hidden="true" className="size-4" />
-              </Link>
-            </Button>
+            <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+              <Button asChild>
+                <Link href="/register">
+                  Começar a organizar
+                  <ArrowRight aria-hidden="true" className="size-4" />
+                </Link>
+              </Button>
+              <Button asChild variant="outline">
+                <Link href="/login">Já tenho uma conta</Link>
+              </Button>
+            </div>
+            <p className="mt-4 text-sm text-[var(--text-secondary)]">
+              No celular ou no computador, direto pelo navegador.
+            </p>
+          </div>
+          <div className="mt-10 grid gap-6 border-t border-[var(--border)] pt-8 md:grid-cols-3">
+            <div>
+              <h2 className="font-semibold text-[var(--text-primary)]">
+                Seu mês em perspectiva
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                Acompanhe o que entra, o que sai e as contas que ainda vão vencer.
+              </p>
+            </div>
+            <div>
+              <h2 className="font-semibold text-[var(--text-primary)]">
+                Cartões sem surpresas
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                Veja suas compras, parcelas e faturas para planejar os próximos
+                pagamentos.
+              </p>
+            </div>
+            <div>
+              <h2 className="font-semibold text-[var(--text-primary)]">
+                Planos que ganham forma
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                Defina orçamentos, organize suas reservas e acompanhe cada passo
+                em direção às suas metas.
+              </p>
+            </div>
           </div>
         </div>
       </section>
