@@ -1,0 +1,3 @@
+-- O seed DEMO_ usa Auth + RPCs e, por isso, é executado explicitamente via
+-- `npm run seed:demo` no Supabase local. Não acople dados de demonstração ao
+-- `supabase db reset`, que é destrutivo.

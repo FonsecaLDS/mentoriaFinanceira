@@ -1,0 +1,50 @@
+begin;
+select plan(23);
+
+insert into auth.users (id, aud, role, email, email_confirmed_at, created_at, updated_at) values
+  ('91000000-0000-4000-8000-000000000001', 'authenticated', 'authenticated', 'budget-owner@example.com', now(), now(), now()),
+  ('91000000-0000-4000-8000-000000000002', 'authenticated', 'authenticated', 'budget-viewer@example.com', now(), now(), now());
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '91000000-0000-4000-8000-000000000001', true);
+select public.create_tenant('Budgets A', 'budgets-a');
+select set_config('test.tenant', (select id::text from public.tenants where slug = 'budgets-a'), true);
+set local role postgres;
+insert into public.tenant_members (tenant_id, user_id, role) values (current_setting('test.tenant')::uuid, '91000000-0000-4000-8000-000000000002', 'viewer');
+set local role authenticated;
+insert into public.accounts (tenant_id, name, type, currency, opening_date) values (current_setting('test.tenant')::uuid, 'Budget account', 'checking', 'BRL', current_date), (current_setting('test.tenant')::uuid, 'USD account', 'checking', 'USD', current_date), (current_setting('test.tenant')::uuid, 'Budget target', 'savings', 'BRL', current_date);
+insert into public.categories (tenant_id, name, type, budget_group) values (current_setting('test.tenant')::uuid, 'Moradia', 'expense', 'fixed'), (current_setting('test.tenant')::uuid, 'Reserva', 'expense', 'savings'), (current_setting('test.tenant')::uuid, 'Salário', 'income', 'other');
+select set_config('test.account', (select id::text from public.accounts where name = 'Budget account'), true);
+select set_config('test.usd_account', (select id::text from public.accounts where name = 'USD account'), true);
+select set_config('test.target', (select id::text from public.accounts where name = 'Budget target'), true);
+select set_config('test.category', (select id::text from public.categories where name = 'Moradia'), true);
+select set_config('test.savings_category', (select id::text from public.categories where name = 'Reserva'), true);
+
+select ok((select relrowsecurity from pg_class where oid = 'public.category_budgets'::regclass), 'budgets have RLS');
+select ok(not has_table_privilege('authenticated', 'public.category_budgets', 'INSERT'), 'budgets cannot be inserted directly');
+select lives_ok($$select public.upsert_category_budget(current_setting('test.tenant')::uuid, current_setting('test.category')::uuid, extract(year from current_date)::smallint, extract(month from current_date)::smallint, 'BRL', 100)$$, 'creates monthly category budget');
+select is((select count(*) from public.category_budgets where tenant_id = current_setting('test.tenant')::uuid), 1::bigint, 'one budget exists for category period');
+select lives_ok($$insert into public.transactions (tenant_id, type, description, amount, currency, category_id, account_id, competence_date, due_date, status, created_by) values (current_setting('test.tenant')::uuid, 'expense', 'Budget expense', 80, 'BRL', current_setting('test.category')::uuid, current_setting('test.account')::uuid, current_date, current_date, 'planned', auth.uid())$$, 'creates budget expense');
+select set_config('test.expense', (select id::text from public.transactions where description = 'Budget expense'), true);
+select lives_ok($$select public.settle_transaction(current_setting('test.expense')::uuid, current_setting('test.account')::uuid, 80, now(), 'budget-settlement-01')$$, 'settles budget expense');
+select is((select spent from public.get_budget_consumption(current_setting('test.tenant')::uuid, extract(year from current_date)::smallint, extract(month from current_date)::smallint, 'competence', 'BRL')), 80.0000::numeric, 'consumption derives from competence expense');
+select is((select alert_level from public.get_budget_consumption(current_setting('test.tenant')::uuid, extract(year from current_date)::smallint, extract(month from current_date)::smallint, 'competence', 'BRL')), 'warning', '80 percent raises warning');
+select is((select usage_percentage from public.get_budget_consumption(current_setting('test.tenant')::uuid, extract(year from current_date)::smallint, extract(month from current_date)::smallint, 'competence', 'BRL')), 80.00::numeric, 'usage percentage is exact');
+select is((select spent from public.get_budget_consumption(current_setting('test.tenant')::uuid, extract(year from current_date)::smallint, extract(month from current_date)::smallint, 'cash', 'BRL')), 80.0000::numeric, 'cash consumption uses settlement');
+select lives_ok($$select public.upsert_category_budget(current_setting('test.tenant')::uuid, current_setting('test.category')::uuid, extract(year from current_date)::smallint, extract(month from current_date)::smallint, 'BRL', 50)$$, 'edits the budget limit');
+insert into public.categories (tenant_id, parent_id, name, type, budget_group) values (current_setting('test.tenant')::uuid, current_setting('test.category')::uuid, 'Moradia filha', 'expense', 'fixed');
+select throws_ok($$select public.upsert_category_budget(current_setting('test.tenant')::uuid, current_setting('test.category')::uuid, extract(year from current_date)::smallint, extract(month from current_date)::smallint, 'BRL', 100)$$, 'P0001', null, 'parent category cannot receive a new budget');
+select is((select variance from public.get_budget_consumption(current_setting('test.tenant')::uuid, extract(year from current_date)::smallint, extract(month from current_date)::smallint, 'cash', 'BRL')), 30.0000::numeric, 'overage variance is spent minus limit');
+select is((select alert_level from public.get_budget_consumption(current_setting('test.tenant')::uuid, extract(year from current_date)::smallint, extract(month from current_date)::smallint, 'cash', 'BRL')), 'exceeded', '100 percent or more is exceeded');
+select lives_ok($$select public.create_transfer(current_setting('test.account')::uuid, current_setting('test.target')::uuid, 40, 'BRL', now(), 'not a budget expense', 'budget-transfer-01')$$, 'creates transfer for exclusion');
+select is((select spent from public.get_budget_consumption(current_setting('test.tenant')::uuid, extract(year from current_date)::smallint, extract(month from current_date)::smallint, 'cash', 'BRL')), 80.0000::numeric, 'transfers do not consume budgets');
+select lives_ok($$select public.reverse_transaction_settlement((select id from public.transaction_settlements where idempotency_key = 'budget-settlement-01'), 'budget-reversal-01')$$, 'reverses budget expense');
+select is((select spent from public.get_budget_consumption(current_setting('test.tenant')::uuid, extract(year from current_date)::smallint, extract(month from current_date)::smallint, 'cash', 'BRL')), 0.0000::numeric, 'reversal removes consumption');
+select lives_ok($$select public.upsert_category_budget(current_setting('test.tenant')::uuid, current_setting('test.savings_category')::uuid, extract(year from current_date)::smallint, extract(month from current_date)::smallint, 'BRL', 100)$$, 'savings category may have a separate budget');
+select is((select count(*) from public.get_budget_consumption(current_setting('test.tenant')::uuid, extract(year from current_date)::smallint, extract(month from current_date)::smallint, 'cash', 'USD')), 0::bigint, 'different currency is not mixed');
+select set_config('request.jwt.claim.sub', '91000000-0000-4000-8000-000000000002', true);
+select throws_ok($$select public.upsert_category_budget(current_setting('test.tenant')::uuid, current_setting('test.category')::uuid, extract(year from current_date)::smallint, extract(month from current_date)::smallint, 'BRL', 200)$$, '42501', null, 'viewer cannot edit budget');
+select set_config('request.jwt.claim.sub', '91000000-0000-4000-8000-000000000001', true);
+select lives_ok($$select public.remove_category_budget(current_setting('test.tenant')::uuid, (select id from public.category_budgets where category_id = current_setting('test.category')::uuid))$$, 'removes budget without deleting history');
+select is((select count(*) from public.audit_logs where resource_type = 'category_budget' and tenant_id = current_setting('test.tenant')::uuid), 4::bigint, 'budget changes are audited');
+select * from finish();
+rollback;

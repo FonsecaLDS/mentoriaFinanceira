@@ -1,0 +1,57 @@
+begin;
+select plan(22);
+
+insert into auth.users (id, aud, role, email, email_confirmed_at, created_at, updated_at) values
+  ('95000000-0000-4000-8000-000000000001', 'authenticated', 'authenticated', 'invoice-owner@example.com', now(), now(), now()),
+  ('95000000-0000-4000-8000-000000000002', 'authenticated', 'authenticated', 'invoice-viewer@example.com', now(), now(), now());
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '95000000-0000-4000-8000-000000000001', true);
+select public.create_tenant('Invoices A', 'invoices-a');
+select set_config('test.tenant_a', (select id::text from public.tenants where slug = 'invoices-a'), true);
+select public.create_tenant('Invoices B', 'invoices-b');
+select set_config('test.tenant_b', (select id::text from public.tenants where slug = 'invoices-b'), true);
+set local role postgres;
+insert into public.tenant_members (tenant_id, user_id, role) values (current_setting('test.tenant_a')::uuid, '95000000-0000-4000-8000-000000000002', 'viewer');
+insert into public.accounts (tenant_id, name, type, currency, opening_date) values (current_setting('test.tenant_a')::uuid, 'Conta', 'checking', 'BRL', current_date);
+insert into public.categories (tenant_id, name, type) values (current_setting('test.tenant_a')::uuid, 'Compras', 'expense');
+select set_config('test.account', (select id::text from public.accounts where tenant_id = current_setting('test.tenant_a')::uuid), true);
+select set_config('test.category', (select id::text from public.categories where tenant_id = current_setting('test.tenant_a')::uuid), true);
+set local role authenticated;
+select public.create_credit_card(current_setting('test.tenant_a')::uuid, 'Cartão', 'Banco', 10000, 'BRL', 15, 10, current_setting('test.account')::uuid);
+select set_config('test.card', (select id::text from public.credit_cards where tenant_id = current_setting('test.tenant_a')::uuid), true);
+select public.create_card_purchase(current_setting('test.tenant_a')::uuid, current_setting('test.card')::uuid, 'Compra', '2026-01-10', 100, 'BRL', 3, current_setting('test.category')::uuid, null::uuid, null::uuid, 'invoice-purchase-001');
+select set_config('test.cycle', (select id::text from public.invoice_cycles where tenant_id = current_setting('test.tenant_a')::uuid order by cycle_end limit 1), true);
+
+select ok((select relrowsecurity from pg_class where oid = 'public.card_invoices'::regclass), 'invoices have RLS');
+select ok(not has_table_privilege('authenticated', 'public.card_invoices', 'INSERT'), 'invoices cannot be inserted directly');
+set local role postgres;
+select is(public.card_cycle_end('2026-02-28', 31), '2026-02-28'::date, 'short month closing is clamped');
+select is(public.card_cycle_end('2024-02-29', 31), '2024-02-29'::date, 'leap year closing is clamped');
+set local role authenticated;
+select lives_ok($$select public.generate_card_invoice(current_setting('test.tenant_a')::uuid, current_setting('test.card')::uuid, current_setting('test.cycle')::uuid)$$, 'generates invoice');
+select set_config('test.invoice', (select id::text from public.card_invoices where invoice_cycle_id = current_setting('test.cycle')::uuid), true);
+select is((select count(*) from public.card_invoices where tenant_id = current_setting('test.tenant_a')::uuid), 1::bigint, 'one invoice exists for the cycle');
+select is((select count(*) from public.card_installments where tenant_id = current_setting('test.tenant_a')::uuid and invoice_id = current_setting('test.invoice')::uuid), 1::bigint, 'only eligible first-cycle installment is linked');
+select is((select total_amount from public.card_invoices where id = current_setting('test.invoice')::uuid), 33.3334::numeric, 'invoice total reconciles to installments');
+select lives_ok($$select public.generate_card_invoice(current_setting('test.tenant_a')::uuid, current_setting('test.card')::uuid, current_setting('test.cycle')::uuid)$$, 'invoice generation is idempotent');
+select is((select count(*) from public.card_invoices where invoice_cycle_id = current_setting('test.cycle')::uuid), 1::bigint, 'idempotent generation does not duplicate invoice');
+select is((select status from public.invoice_cycles where id = current_setting('test.cycle')::uuid), 'open', 'generation opens the cycle');
+select lives_ok($$select public.close_card_invoice(current_setting('test.tenant_a')::uuid, current_setting('test.invoice')::uuid)$$, 'closes invoice');
+select is((select status from public.card_invoices where id = current_setting('test.invoice')::uuid), 'closed', 'invoice is closed');
+select is((select status from public.invoice_cycles where id = current_setting('test.cycle')::uuid), 'closed', 'cycle is closed with invoice');
+select lives_ok($$select public.close_card_invoice(current_setting('test.tenant_a')::uuid, current_setting('test.invoice')::uuid)$$, 'closing is idempotent');
+set local role postgres;
+select set_config('test.empty_cycle', id::text, true) from public.get_or_create_invoice_cycle(current_setting('test.tenant_a')::uuid, current_setting('test.card')::uuid, '2027-03-15', 10, 15);
+set local role authenticated;
+select lives_ok($$select public.generate_card_invoice(current_setting('test.tenant_a')::uuid, current_setting('test.card')::uuid, current_setting('test.empty_cycle')::uuid)$$, 'generates empty invoice');
+select is((select total_amount from public.card_invoices where invoice_cycle_id = current_setting('test.empty_cycle')::uuid), 0::numeric, 'empty invoice reconciles to zero');
+select lives_ok($$select public.close_card_invoice(current_setting('test.tenant_a')::uuid, (select id from public.card_invoices where invoice_cycle_id = current_setting('test.empty_cycle')::uuid))$$, 'closes empty invoice');
+set local role postgres;
+select throws_ok($$update public.card_invoices set total_amount = 99 where id = current_setting('test.invoice')::uuid$$, 'P0001', null, 'closed invoice total is protected');
+select throws_ok($$update public.card_invoices set status = 'paid', paid_at = null where id = current_setting('test.invoice')::uuid$$, 'P0001', null, 'paid invoice requires payment metadata');
+set local role authenticated;
+select throws_ok($$select public.generate_card_invoice(current_setting('test.tenant_a')::uuid, current_setting('test.card')::uuid, gen_random_uuid())$$, 'P0001', null, 'unknown cycle is rejected');
+select set_config('request.jwt.claim.sub', '95000000-0000-4000-8000-000000000002', true);
+select throws_ok($$select public.close_card_invoice(current_setting('test.tenant_a')::uuid, current_setting('test.invoice')::uuid)$$, 'P0001', null, 'viewer cannot close invoice');
+select * from finish();
+rollback;

@@ -1,0 +1,51 @@
+begin;
+select plan(21);
+
+insert into auth.users (id, aud, role, email, email_confirmed_at, created_at, updated_at) values
+  ('94000000-0000-4000-8000-000000000001', 'authenticated', 'authenticated', 'purchase-owner@example.com', now(), now(), now()),
+  ('94000000-0000-4000-8000-000000000002', 'authenticated', 'authenticated', 'purchase-viewer@example.com', now(), now(), now());
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '94000000-0000-4000-8000-000000000001', true);
+select public.create_tenant('Purchases A', 'purchases-a');
+select set_config('test.tenant_a', (select id::text from public.tenants where slug = 'purchases-a'), true);
+select public.create_tenant('Purchases B', 'purchases-b');
+select set_config('test.tenant_b', (select id::text from public.tenants where slug = 'purchases-b'), true);
+set local role postgres;
+insert into public.tenant_members (tenant_id, user_id, role) values (current_setting('test.tenant_a')::uuid, '94000000-0000-4000-8000-000000000002', 'viewer');
+insert into public.accounts (tenant_id, name, type, currency, opening_date) values (current_setting('test.tenant_a')::uuid, 'Conta de pagamento', 'checking', 'BRL', current_date);
+insert into public.categories (tenant_id, name, type) values (current_setting('test.tenant_a')::uuid, 'Compras', 'expense');
+select set_config('test.account', (select id::text from public.accounts where tenant_id = current_setting('test.tenant_a')::uuid), true);
+select set_config('test.category', (select id::text from public.categories where tenant_id = current_setting('test.tenant_a')::uuid), true);
+set local role authenticated;
+select public.create_credit_card(current_setting('test.tenant_a')::uuid, 'Cartão compras', 'Banco', 10000, 'BRL', 15, 10, current_setting('test.account')::uuid);
+select set_config('test.card', (select id::text from public.credit_cards where tenant_id = current_setting('test.tenant_a')::uuid), true);
+set local role postgres;
+insert into public.credit_cards (tenant_id, name, name_normalized, credit_limit, currency, closing_day, due_day, created_by) values (current_setting('test.tenant_b')::uuid, 'Cartão B', 'cartão b', 1000, 'BRL', 10, 20, '94000000-0000-4000-8000-000000000001');
+select set_config('test.card_b', (select id::text from public.credit_cards where tenant_id = current_setting('test.tenant_b')::uuid), true);
+set local role authenticated;
+
+select ok((select relrowsecurity from pg_class where oid = 'public.card_purchases'::regclass), 'purchases have RLS');
+select ok((select relrowsecurity from pg_class where oid = 'public.card_installments'::regclass), 'installments have RLS');
+select ok(not has_table_privilege('authenticated', 'public.card_purchases', 'INSERT'), 'purchases cannot be inserted directly');
+select lives_ok($$select public.create_card_purchase(current_setting('test.tenant_a')::uuid, current_setting('test.card')::uuid, 'Notebook', '2026-01-10', 100, 'BRL', 3, current_setting('test.category')::uuid, null::uuid, null::uuid, 'purchase-idempotency-001')$$, 'creates purchase atomically');
+select set_config('test.purchase', (select id::text from public.card_purchases where idempotency_key = 'purchase-idempotency-001'), true);
+select is((select count(*) from public.card_installments where purchase_id = current_setting('test.purchase')::uuid), 3::bigint, 'creates three installments');
+select is((select sum(amount) from public.card_installments where purchase_id = current_setting('test.purchase')::uuid), 100.0000::numeric, 'installments sum exactly to purchase');
+select is((select amount from public.card_installments where purchase_id = current_setting('test.purchase')::uuid and installment_number = 1), 33.3334::numeric, 'remainder goes to first installment');
+select is((select count(*) from public.transactions where description like 'Notebook (%' and status = 'planned'), 3::bigint, 'installments create planned expenses');
+select is((select count(*) from public.account_movements where tenant_id = current_setting('test.tenant_a')::uuid), 0::bigint, 'purchase does not move bank balance');
+select is((select count(*) from public.invoice_cycles where card_id = current_setting('test.card')::uuid), 3::bigint, 'each installment belongs to a cycle');
+select is((select cycle_end from public.invoice_cycles where card_id = current_setting('test.card')::uuid order by cycle_start limit 1), '2026-01-15'::date, 'purchase before closing enters current cycle');
+select lives_ok($$select public.create_card_purchase(current_setting('test.tenant_a')::uuid, current_setting('test.card')::uuid, 'Notebook', '2026-01-10', 100, 'BRL', 3, current_setting('test.category')::uuid, null::uuid, null::uuid, 'purchase-idempotency-001')$$, 'replays purchase idempotently');
+select is((select count(*) from public.card_purchases where idempotency_key = 'purchase-idempotency-001'), 1::bigint, 'idempotency does not duplicate purchase');
+select lives_ok($$select public.create_card_purchase(current_setting('test.tenant_a')::uuid, current_setting('test.card')::uuid, 'Centavos', '2026-01-16', 0.01, 'BRL', 2, current_setting('test.category')::uuid, null::uuid, null::uuid, 'purchase-idempotency-002')$$, 'creates two-cent installment purchase');
+select is((select sum(amount) from public.card_installments i join public.card_purchases p on p.id = i.purchase_id where p.idempotency_key = 'purchase-idempotency-002'), 0.0100::numeric, 'small amount preserves exact total');
+select is((select cycle_end from public.invoice_cycles where card_id = current_setting('test.card')::uuid and cycle_end = '2026-02-15'), '2026-02-15'::date, 'purchase after closing enters next cycle');
+select lives_ok($$select public.cancel_card_purchase(current_setting('test.tenant_a')::uuid, current_setting('test.purchase')::uuid)$$, 'cancels purchase without deleting history');
+select is((select count(*) from public.card_installments where purchase_id = current_setting('test.purchase')::uuid and status = 'cancelled'), 3::bigint, 'cancellation preserves installment history');
+select is((select count(*) from public.transactions where description like 'Notebook (%' and status = 'cancelled'), 3::bigint, 'cancellation preserves transaction history');
+select throws_ok($$select public.create_card_purchase(current_setting('test.tenant_a')::uuid, current_setting('test.card_b')::uuid, 'Cross tenant', '2026-01-10', 1, 'BRL', 1, null::uuid, null::uuid, null::uuid, 'purchase-idempotency-003')$$, 'P0001', null, 'rejects card from another tenant');
+select set_config('request.jwt.claim.sub', '94000000-0000-4000-8000-000000000002', true);
+select throws_ok($$select public.create_card_purchase(current_setting('test.tenant_a')::uuid, current_setting('test.card')::uuid, 'Viewer', '2026-01-10', 1, 'BRL', 1, null::uuid, null::uuid, null::uuid, 'purchase-idempotency-004')$$, 'P0001', null, 'viewer cannot create purchase');
+select * from finish();
+rollback;

@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f6f8fc;
+  --surface: #ffffff;
+  --surface-muted: #f1f5fb;
+  --text-primary: #111b31;
+  --text-secondary: #64748b;
+  --border: #e3eaf4;
+  --primary: #245cf6;
+  --primary-hover: #1747c8;
+  --success: #0ca678;
+  --danger: #e83d58;
+  --warning: #e59a21;
+  --info: #367ff6;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+}
+
+:root[data-theme="dark"] {
+  --background: #0d1424;
+  --surface: #172235;
+  --surface-muted: #1e2b42;
+  --text-primary: #f5f7fe;
+  --text-secondary: #adbbd2;
+  --border: #334158;
+  --primary: #76a4ff;
+  --primary-hover: #9abeff;
+  --success: #36d6ab;
+  --danger: #ff7185;
+  --warning: #f6bd5c;
+  --info: #78b2ff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --background: #0d1424;
+    --surface: #172235;
+    --surface-muted: #1e2b42;
+    --text-primary: #f5f7fe;
+    --text-secondary: #adbbd2;
+    --border: #334158;
+    --primary: #76a4ff;
+    --primary-hover: #9abeff;
+    --success: #36d6ab;
+    --danger: #ff7185;
+    --warning: #f6bd5c;
+    --info: #78b2ff;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+html {
+  min-width: 320px;
+}
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--text-primary);
+  font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
